@@ -1,9 +1,50 @@
 # NavIC CBTMS Backend
 
-FastAPI and SQLAlchemy API, TCP telemetry receiver, simulator client, persistence, and backend tests for NavIC.
+This repository contains the server side of NavIC, a college bus tracking prototype. FastAPI provides the REST and WebSocket APIs; SQLAlchemy persists fleet and telemetry records; a newline-delimited JSON TCP receiver accepts device messages. A simulator is included for development because no IVTD hardware is connected, and simulator telemetry stays labelled as simulated.
 
-## Run locally
+## Requirements
 
-Install Python dependencies with `python -m pip install -r backend/requirements.txt`, copy `.env.example` to `.env` if configuration overrides are needed, and start from this repository root with `python backend/run.py`. The HTTP API defaults to port 8000 and the newline-delimited JSON telemetry receiver defaults to port 5000. Local SQLite is used by default. No real IVTD device is connected; bundled telemetry is simulated.
+Python 3.11+ and pip. SQLite is the local default; no external database service is required for a basic run.
 
-Run backend tests with `pytest backend/tests tests`. Run lint with `ruff check backend navic_tcp tests scripts`. Keep database migration checks on a disposable SQLite database; migrations must remain additive and reversible.
+## Install and run
+
+Run these commands from the repository root:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate                 # Windows: .venv\Scripts\activate
+python -m pip install -r backend/requirements.txt
+cp .env.example .env                 # optional local configuration
+python backend/run.py
+```
+
+The HTTP API listens on port `8000` by default, with health check at <http://localhost:8000/health> and API docs at <http://localhost:8000/docs>. The telemetry TCP receiver defaults to `127.0.0.1:5000`. Keep `.env` and all credentials private.
+
+## Run simulated telemetry
+
+In another terminal, from the repository root:
+
+```bash
+python -m navic_tcp.client_main --devices 6 --continuous
+```
+
+These generated frames are development data, not evidence about the real IVTD protocol or hardware.
+
+## Tests and lint
+
+```bash
+pytest backend/tests tests
+ruff check backend navic_tcp tests scripts
+```
+
+Use a disposable SQLite database when checking migrations. Schema changes must be additive and reversible; do not reset existing fleet or telemetry data.
+
+## Main folders
+
+- `backend/` — FastAPI app, SQLAlchemy models, migrations, and backend tests.
+- `navic_tcp/` — TCP receiver, message validation, simulator, and shared backend services.
+- `tests/` — protocol, startup, and integration coverage.
+- `config/` — demo device registry.
+- `docs/` — project decisions and technical notes.
+
+The [complete application repository](https://github.com/CorbenZen/NavIC-complete) includes the React frontend and full-stack run instructions.
