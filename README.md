@@ -20,6 +20,13 @@ python backend/run.py
 
 The HTTP API listens on port `8000` by default, with health check at <http://localhost:8000/health> and API docs at <http://localhost:8000/docs>. The telemetry TCP receiver defaults to `127.0.0.1:5000`. Keep `.env` and all credentials private.
 
+To provision an additional administrator, run this locally as an existing operator. With `--user-id`, the command prompts for a password and stores only a salted scrypt hash in the database. Do not pass credentials on the command line or commit them.
+
+```bash
+python -m navic_tcp.manage_users bootstrap-admin \
+  --email admin2@example.edu --user-id admin2@example.edu --force
+```
+
 ## Run simulated telemetry
 
 In another terminal, from the repository root:
