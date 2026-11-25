@@ -83,6 +83,11 @@ from .reporting import (
     trip_groups,
     valid_coordinates,
 )
+
+APP_VERSION = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip()
+if not APP_VERSION:
+    raise RuntimeError("VERSION file must contain the application release version")
+
 from .schema import ensure_schema
 from .security import (
     LoginRateLimiter,
@@ -98,7 +103,13 @@ from .security import (
 )
 from .server import TelemetryServer
 from .store import TelemetryStore
-from .vehicle_status import DEMO_FRESHNESS_SECONDS, FRESHNESS_SECONDS, STATUS_LABELS, classify_vehicle_status
+from .vehicle_status import (
+    DEMO_FRESHNESS_SECONDS,
+    FRESHNESS_SECONDS,
+    STATUS_LABELS,
+    classify_vehicle_status,
+    freshness_for_source,
+)
 
 LOG = logging.getLogger("navic_tcp.fastapi")
 load_env_file(Path(__file__).resolve().parent.parent / ".env")
@@ -524,11 +535,6 @@ def _iso(value: datetime | None) -> str | None:
     return stamp.isoformat() if stamp else None
 
 
-def speed_limit(db) -> float:
-    row = db.get(SystemSetting, "overspeed_kmh")
-    return float(row.value) if row else float(os.getenv("OVERSPEED_KMH", "80"))
-
-
 def _json_safe(value: Any) -> Any:
     """Replace non-finite values with null before strict JSON responses; other values retain their type."""
     if isinstance(value, float):
@@ -538,6 +544,11 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     return value
+
+
+def speed_limit(db) -> float:
+    row = db.get(SystemSetting, "overspeed_kmh")
+    return float(row.value) if row else float(os.getenv("OVERSPEED_KMH", "80"))
 
 
 def device_offline_seconds(db) -> float:
@@ -561,14 +572,25 @@ def _interval(seconds: float) -> str:
     return f"{seconds // 86400}d ago"
 
 
-def _status_for(point: LocationHistory | None, now: datetime, offline_seconds: float = 300) -> tuple[str, str]:
-    """Compatibility adapter around the shared fixed-threshold classifier."""
-    result = classify_vehicle_status(
+def _display_status(point: LocationHistory | None, now: datetime):
+    """Classify a persisted fix for API/UI display.
+
+    The freshness window follows the fix's provenance (simulator: 20 s,
+    hardware: 5 min) so refreshed pages agree with the live view. The
+    offline-alert loop deliberately keeps the fixed 5-minute window.
+    """
+    return classify_vehicle_status(
         point.speed if point else None,
         point.ignition if point else None,
         point.timestamp if point else None,
         now=now,
+        freshness_seconds=freshness_for_source(point.data_source if point else None),
     )
+
+
+def _status_for(point: LocationHistory | None, now: datetime, offline_seconds: float = 300) -> tuple[str, str]:
+    """Compatibility adapter around the shared display classifier."""
+    result = _display_status(point, now)
     return STATUS_LABELS[result.status], result.status_key
 
 
@@ -1097,7 +1119,7 @@ async def lifespan(app):
 
 app = FastAPI(
     title="NavIC Fleet API",
-    version="2.0.0",
+    version=APP_VERSION,
     description="College Bus Tracking and Management System API",
     lifespan=lifespan,
 )
@@ -1672,7 +1694,7 @@ def _fleet_snapshot(db) -> dict[str, Any]:
     for bus in buses:
         device = active_device_by_bus.get(bus.id)
         point = point_by_device.get(device.device_id) if device else None
-        classification = classify_vehicle_status(point.speed if point else None, point.ignition if point else None, point.timestamp if point else None, now=now)
+        classification = _display_status(point, now)
         status, key = STATUS_LABELS[classification.status], classification.status_key
         if point:
             bus_points[bus.id] = point
@@ -1906,7 +1928,7 @@ def dashboard_stats(user=Depends(current_user)):
             "active_tracking_devices": sum(
                 1
                 for point in latest
-                if classify_vehicle_status(point.speed, point.ignition, point.timestamp, now=now).status != "OUT_OF_NETWORK"
+                if _display_status(point, now).status != "OUT_OF_NETWORK"
             ),
             "total_drivers": summary["drivers"]["total"],
             "active_alerts": sum(1 for point in latest if point.speed is not None and point.speed > limit),
@@ -1933,7 +1955,7 @@ def tracking_latest(user=Depends(current_user)):
                 continue
             bus = db.get(Bus, device.bus_id) if device.bus_id else None
             point = points.get(device_id)
-            classification = classify_vehicle_status(point.speed if point else None, point.ignition if point else None, point.timestamp if point else None, now=now)
+            classification = _display_status(point, now)
             status, key = STATUS_LABELS[classification.status], classification.status_key
             runtime = app.state.tcp.store.get_device(device_id) if hasattr(app.state, "tcp") else None
             rows.append(
@@ -2133,13 +2155,13 @@ def report_data(
                         "distance_km": round(trip_distance_km(group), 3),
                         "max_speed_kmh": round(max(speeds), 1) if speeds else None,
                         "avg_speed_kmh": round(sum(speeds) / len(speeds), 1) if speeds else None,
+                        "simulated": all(bool(point.simulated) for point in group),
+                        "data_sources": sources,
                         "records": len(group),
                     }
                 )
             rules = {
                 "trip_definition": "Consecutive fixes from one device separated by no more than 30 minutes.",
-                        "simulated": all(bool(point.simulated) for point in group),
-                        "data_sources": sources,
                 "distance": "great-circle segments up to 30 minutes and 100 km",
             }
 
@@ -2753,7 +2775,7 @@ def bus_response(db, bus: Bus, *, preloaded: bool = False, points_by_device: dic
                 .limit(1)
             )
     now = datetime.now(timezone.utc)
-    classification = classify_vehicle_status(point.speed if point else None, point.ignition if point else None, point.timestamp if point else None, now=now)
+    classification = _display_status(point, now)
     simulated = point.simulated if point is not None else (device.simulated if device is not None else None)
     data_source = (
         (getattr(point, "data_source", None) if point is not None else None)
